@@ -1,13 +1,11 @@
 #include <Arduino.h>
 #include <WiFiMulti.h>
 #include <WebSocketsClient.h>
+#include <secrets.h>
 
 // with help from https://www.youtube.com/watch?v=z53MkVFOnIo&t=55s&ab_channel=TomaszTarnowski
 
 #define LED_BUILTIN  2
-
-#define WIFI_SSID         "Chez_Stonesifer"
-#define WIFI_PASSWORD     ""
 
 #define WS_HOST           ""
 #define WS_PORT           ""
