@@ -1,128 +1,111 @@
-#include <Arduino.h>
-#include <WiFiMulti.h>
-#include <WebSocketsClient.h>
+#include "secrets.h"
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
 #include <ArduinoJson.h>
-#include <secrets.h>
-
-// with help from https://www.youtube.com/watch?v=z53MkVFOnIo&t=55s&ab_channel=TomaszTarnowski
-
+#include "WiFi.h"
+ 
 #define LED_BUILTIN  2
-#define MSG_SIZE 256
+ 
+#define AWS_IOT_PUBLISH_TOPIC   "esp32/pub"
+#define AWS_IOT_SUBSCRIBE_TOPIC "esp32/sub"
+ 
+WiFiClientSecure net = WiFiClientSecure();
+PubSubClient client(net);
 
-WiFiMulti wifiMulti;
-WebSocketsClient wsClient;
+float h;
+float t;
 
-/* Method will return an error to the server */
-void sendErrorMessage(const char *error){
-  char msg[MSG_SIZE];
-
-  sprintf(msg, "{\"action\":\"msg\",\"type\":\"error\",\"body\":\"%s\"}", error);
-
-  wsClient.sendTXT(msg);
-}
-
-void sendOkMessage(){
-  wsClient.sendTXT("{\"action\":\"msg\",\"type\":\"status\",\"body\":\"ok\"}");
-}
-
-uint8_t toMode(const char *val) {
-    if (strcmp(val, "output") == 0){
-      return OUTPUT;
-    }
-
-    if (strcmp(val, "input_pullup") == 0){
-      return INPUT_PULLUP;
-    }
-
-    return INPUT;
-}
-
-/* Method that will use payload to activate door motor */
-void handleMessage(uint8_t * payload){
+void messageHandler(char* topic, byte* payload, unsigned int length)
+{
+  Serial.print("incoming: ");
+  Serial.println(topic);
+ 
   JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, payload);
-
-  // Test if parsing succeeds
-  if (error) {
-    Serial.print(F("deserializeJson() failed: "));
-    Serial.println(error.f_str());
-    sendErrorMessage(error.c_str());
-    return;
-  }
-
-  if (!doc["type"].is<const char *>()) {
-    sendErrorMessage("invalid message type format");
-    return;
-  }
-
-  if (strcmp(doc["type"], "cmd") == 0){
-    if (doc["body"].is<JsonObject>()) {
-      sendErrorMessage("invalid command body");
-    }
-
-    if (strcmp(doc["body"]["type"], "pinMode") == 0) {
-      pinMode(doc["body"]["pin"], toMode(doc["body"]["mode"]));
-      sendOkMessage();
-      return;
-    }
-
-    if (strcmp(doc["body"]["type"], "digitalWrite") == 0) {
-      digitalWrite(doc["body"]["pin"], doc["body"]["value"]);
-      sendOkMessage();
-      return;
-    }
-
-    if (strcmp(doc["body"]["type"], "digitalRead") == 0) {
-      auto value = digitalRead(doc["body"]["pin"]);
-
-      char msg[MSG_SIZE];
-
-      sprintf(msg, "{\"action\":\"msg\",\"type\":\"output\",\"body\":\"%d\"}",
-              value);
-
-      wsClient.sendTXT(msg);
-      return;
-    }
-    sendErrorMessage("unsupported comment type");
-    return;
-  }
-  sendErrorMessage("unsupported message type");
-  return;
+  deserializeJson(doc, payload);
+  const char* message = doc["message"];
+  Serial.println(message);
 }
-
-void onWSEvent(WStype_t type, uint8_t *payload, size_t length){
-  switch(type){
-    case WStype_CONNECTED:
-      Serial.println("WS Connected");
-      break;
-    case WStype_DISCONNECTED:
-      Serial.println("WS Disonnected");
-      break;
-    case WStype_TEXT:
-      Serial.printf("WS Message: %s\n", payload);
-      handleMessage(payload);
-      break;
+ 
+void connectAWS()
+{
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+ 
+  Serial.println("Connecting to Wi-Fi");
+ 
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(500);
+    Serial.print(".");
   }
-    
-}
-
-void setup() {
-  Serial.begin(115200);
-  pinMode(LED_BUILTIN, OUTPUT);
-  wifiMulti.addAP(WIFI_SSID, WIFI_PASSWORD);
-
-  while(wifiMulti.run() != WL_CONNECTED){
+ 
+  // Configure WiFiClientSecure to use the AWS IoT device credentials
+  net.setCACert(AWS_CERT_CA);
+  net.setCertificate(AWS_CERT_CRT);
+  net.setPrivateKey(AWS_CERT_PRIVATE);
+ 
+  // Connect to the MQTT broker on the AWS endpoint we defined earlier
+  client.setServer(AWS_IOT_ENDPOINT, 8883);
+ 
+  // Create a message handler
+  client.setCallback(messageHandler);
+ 
+  Serial.println("Connecting to AWS IOT");
+ 
+  while (!client.connect(THING_NAME))
+  {
+    Serial.print(".");
     delay(100);
   }
-  Serial.println("Connected");
-
-  wsClient.beginSSL(WS_HOST, WS_PORT, WS_URL, "", "wss");
-  wsClient.onEvent(onWSEvent);
+ 
+  if (!client.connected())
+  {
+    Serial.println("AWS IoT Timeout!");
+    return;
+  }
+ 
+  // Subscribe to a topic
+  client.subscribe(AWS_IOT_SUBSCRIBE_TOPIC);
+ 
+  Serial.println("AWS IoT Connected!");
 }
-
-bool isConnected = false;
-
-void loop() {
-  digitalWrite(LED_BUILTIN, WiFi.status() == WL_CONNECTED);
-  wsClient.loop();
+ 
+void publishMessage()
+{
+  JsonDocument doc;
+  doc["humidity"] = h;
+  doc["temperature"] = t;
+  char jsonBuffer[512];
+  serializeJson(doc, jsonBuffer); // print to client
+ 
+  client.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer);
+}
+ 
+void setup()
+{
+  Serial.begin(115200);
+  connectAWS();
+}
+ 
+void loop()
+{
+  h = 0;
+  t = 100;
+ 
+ 
+  if (isnan(h) || isnan(t) )  // Check if any reads failed and exit early (to try again).
+  {
+    Serial.println(F("Failed to read from DHT sensor!"));
+    return;
+  }
+ 
+  Serial.print(F("Humidity: "));
+  Serial.print(h);
+  Serial.print(F("%  Temperature: "));
+  Serial.print(t);
+  Serial.println(F("°C "));
+ 
+  publishMessage();
+  client.loop();
+  delay(1000);
 }
