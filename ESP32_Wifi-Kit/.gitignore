@@ -6,3 +6,9 @@
 
 
 src/secrets.h
+src/cam_email.md
+
+.DS_Store
+
+../.DS_Store
+../.serverless/
